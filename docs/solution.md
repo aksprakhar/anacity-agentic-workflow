@@ -10,7 +10,7 @@ That gave me three needs to design for:
 - **Admins** need to see what is waiting on them, which move dates are closest, whether a request is complete, and, when a request comes back after they asked a question, whether their question was actually answered.
 - **The business** needs one system that serves many communities with different rules, without a code change for each one.
 
-I scoped the prototype to the request → review → decision loop, because that is where both roles meet and where the agent can help most. I left out document uploads, payments, dues lookups and lift/slot booking. Each of those needs an integration with a real ANACITY system (billing, gate management) that I could not credibly fake, and pretending to verify a document with an LLM would be worse than not doing it. Section 9 describes how I would add them.
+I scoped the prototype to the request → review → decision loop, because that is where both roles meet and where the agent can help most. I left out document uploads, payments, dues lookups and lift/slot booking. Each of those needs an integration with a real ANACITY system (billing, gate management) that I could not credibly fake, and pretending to verify a document with an LLM would be worse than not doing it. Section 12 describes how I would add them.
 
 ## 2. Resident journey
 
@@ -95,9 +95,7 @@ I used AI for the three jobs that are about interpreting language, and kept ever
 | **Submission summary** | Every submit / resubmit | Config snapshot, submitted answers | Short summary for the admin, a non-binding recommendation and reasons |
 | **Feedback check** | Resubmission after a more-info request | The admin's question, the resident's reply, the previous answers, and the list of changed fields | Addressed / Partially addressed / Not addressed, plus a note on what is still outstanding |
 
-The AI feedback verdict is advisory and can be influenced by resident wording, which is why the raw resident reply and deterministic diff are shown beside it.
-
-The feedback check is the part I think matters most. Without it the summary mostly repeated answers the admin could already see. With it, the model answers the question an admin actually has on a resubmission: *did they fix what I asked for?* The field diff is computed in code and handed to the model, so the model reasons about the change rather than trying to find it.
+The feedback check is the part I think matters most. Without it the summary mostly repeated answers the admin could already see. With it, the model answers the question an admin actually has on a resubmission: *did they fix what I asked for?* The field diff is computed in code and handed to the model, so the model reasons about the change rather than trying to find it. The verdict is still only advice, and a resident's wording can sway it, so the admin always sees the raw reply and the diff next to it.
 
 Everything deterministic stays in code: required fields, number ranges, select options, date rules, the list of changed fields, allowed transitions and the approve/reject action itself.
 
@@ -114,11 +112,11 @@ I kept autonomy low on purpose. A wrong approval lets someone into a building, a
 
 ### Guardrails
 
-The resident assistant helps fill the selected move form through proposed values, missing details and clarifications, including replies to admin questions. It has no free-text community-guidance channel. The prompt identifies ANACITY and receives the request type, trusted community name, configured field labels/types/options/requirements, current answers, date and current admin question. It forbids invented requirements, unsupported actions and revealing hidden instructions.
+The resident assistant only helps fill in the selected form: it suggests values and lists what's missing or unclear, including when the resident is answering an admin's question. It doesn't write free-text guidance. I give it the request type, the community name, the configured fields with their options and limits, the current answers, today's date and the admin's question if there is one, and the prompt tells it not to invent requirements, take actions or reveal its instructions.
 
-A required structured `intent` distinguishes `WORKFLOW` from `OFF_TOPIC`. The prompt keeps mixed move details and unsupported actions as `WORKFLOW`, extracting supported details and ignoring the action. Unrelated questions or unsupported actions alone use `OFF_TOPIC`. For `OFF_TOPIC`, server code discards every proposal and all generated commentary and returns "I can only help fill in your move-in or move-out request." The resident UI shows only that message. Unknown intent or malformed output uses the existing fallback. Assessment mode cannot accept an off-topic review. Older stored assessments remain readable.
+Every response has to say whether the message was about the move (`WORKFLOW`) or not (`OFF_TOPIC`). A message that mixes move details with "please approve" counts as `WORKFLOW`: the details are used and the request is ignored. For `OFF_TOPIC`, the server throws away everything else the model returned and shows one fixed message: "I can only help fill in your move-in or move-out request." A missing or unknown value falls back to the no-AI path, and an off-topic answer is never accepted as an admin assessment.
 
-Intent classification still depends on the model and can be wrong, including on disguised or mixed prompt injections. These are prototype-level guardrails, not complete production abuse prevention. The assistant has no action tools; configured-field/value checks and server-side lifecycle validation remain authoritative even if classification fails. Tests use mocked classifications, not live API calls.
+The model makes this call, so it can be wrong, especially with a disguised or mixed prompt injection. I treat it as a prototype guardrail, not full abuse prevention. The assistant has no tools to act with, and the checks below plus the server's own lifecycle rules apply whatever the model decides. The unit tests mock this classification; the live results are in section 9.
 
 - **Structured output only**: the model must return JSON matching a strict schema. Anything else, including an extra key such as `approve`, is treated as a failed call.
 - **Each proposal is checked independently**: a proposal is dropped if its key isn't in the config, it repeats a key, or its evidence phrase can't be found in the resident's text (the match ignores case, spacing and punctuation). One bad proposal doesn't discard the good ones.

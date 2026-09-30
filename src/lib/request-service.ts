@@ -87,7 +87,6 @@ export function answersForRequest(request: MoveRequest) {
     Array.isArray(data)
   )
     return data;
-  // The original form stored unused fields from the other journey as null.
   return Object.fromEntries(
     Object.entries(data).filter(([, value]) => value !== null),
   );

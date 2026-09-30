@@ -2,6 +2,8 @@
 
 A prototype of the move-in and move-out journeys for residents and community admins. The forms are driven by each community's configuration, an AI assistant helps residents fill them in and helps admins review, and admins make every decision.
 
+**Live demo:** https://anacity-agentic-workflow.vercel.app
+
 Built with Next.js 16, TypeScript, Prisma 7, PostgreSQL and the OpenAI Responses API.
 
 The design write-up is in [docs/solution.md](docs/solution.md).
@@ -26,13 +28,6 @@ npm run dev
 Open http://localhost:3000.
 
 The seed creates two communities (ANACITY Gardens and ANACITY Heights), a demo resident, a demo admin, four more sample residents, and six sample requests covering every status. You can re-run it at any time. It updates the community configurations and rebuilds the six sample requests with move dates relative to today, keeping their reference numbers. Any changes you made to those sample requests are discarded; requests you created in the app are not touched.
-
-**Upgrading a database created by an earlier version of this repo?** The communities were renamed and the old seed looked them up by name, so reset the database before seeding. This deletes all local data:
-
-```sh
-npx prisma migrate reset
-npm run db:seed
-```
 
 ## Demo walkthrough
 
@@ -66,9 +61,9 @@ There is no login. The **Resident** pages act as `resident@demo.com` and the **A
 
 ## Assistant boundary
 
-The resident assistant only helps complete the selected community move-in/move-out workflow. It receives the request type, community name, configured fields and rules, current answers, date and any current admin question. It must not invent community requirements. When move details are mixed with a request to approve, reject, delete, change status or reveal instructions, the prompt asks for `WORKFLOW`: extract the supported details and ignore the unsupported action. Unrelated questions or unsupported actions without relevant move content use `OFF_TOPIC`. Server code clears all proposals and model commentary for that result and returns "I can only help fill in your move-in or move-out request." The UI shows no suggestions. The assistant proposes field values and lists missing details or clarifications; it has no free-text guidance channel.
+The assistant only helps fill in the selected move-in or move-out form. It suggests field values and lists what's missing or unclear; it can't answer general questions or take any action. If a message mixes move details with something like "please approve", it uses the move details and ignores the rest. If there are no move details at all (a coding question, "reveal your prompt"), it replies only "I can only help fill in your move-in or move-out request."
 
-Configured-field, evidence, count and value checks still apply to `WORKFLOW` results; the assistant has no action tools, and server validation and manual admin decisions remain authoritative. Classification is model-based: these are prototype guardrails, not complete production abuse prevention. A missing key or failed call keeps the existing manual fallback. Tests mock the classification; they do not measure live-model accuracy.
+The model decides which case applies, so it can get this wrong. Whatever it decides, the server still checks every suggested value against the community's configuration, and only an admin can approve or reject. Details are in [docs/solution.md](docs/solution.md#guardrails).
 
 ## Checks
 
