@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  RESIDENT
+  ADMIN
+}
+
+enum RequestType {
+  MOVE_IN
+  MOVE_OUT
+}
+
+enum RequestStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  MORE_INFO_REQUIRED
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id        String        @id @default(cuid())
+  name      String
+  email     String        @unique
+  role      UserRole
+  requests  MoveRequest[]
+  createdAt DateTime      @default(now())
+}
+
+model Community {
+  id        String              @id @default(cuid())
+  name      String
+  workflows CommunityWorkflow[]
+  requests  MoveRequest[]
+  createdAt DateTime            @default(now())
+}
+
+model CommunityWorkflow {
+  id          String      @id @default(cuid())
+  communityId String
+  type        RequestType
+  config      Json
+
+  community Community @relation(fields: [communityId], references: [id])
+
+  @@unique([communityId, type])
+}
+
+model MoveRequest {
+  reference   String        @unique
+  id          String        @id @default(cuid())
+  userId      String
+  communityId String
+  type        RequestType
+  status      RequestStatus @default(DRAFT)
+  data        Json
+  aiSummary   String?
+  aiAssessment Json?
+  workflowSnapshot Json?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  user      User           @relation(fields: [userId], references: [id])
+  community Community      @relation(fields: [communityId], references: [id])
+  events    RequestEvent[]
+}
+
+model RequestEvent {
+  id        String   @id @default(cuid())
+  requestId String
+  eventType String
+  actor     String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  request MoveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
