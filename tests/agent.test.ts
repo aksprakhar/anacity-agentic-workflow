@@ -1,17 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assistMove, validateAgentOutput } from "../src/lib/agent";
+import {
+  assistMove,
+  offTopicMessage,
+  validateAgentOutput,
+} from "../src/lib/agent";
 import { demoCommunities } from "../prisma/workflows";
 
 const config = demoCommunities[0].workflows.MOVE_IN;
 const context = {
   mode: "extract" as const,
+  requestType: "MOVE_IN" as const,
+  community: { name: demoCommunities[0].name },
   config,
   answers: {},
   description: "Two occupants moving to B-1204",
   today: "2030-04-01",
 };
 const output = {
+  intent: "WORKFLOW",
   proposals: [{ key: "occupants", value: 2, evidence: "Two occupants" }],
   missing: [],
   ambiguities: [],
@@ -33,7 +40,12 @@ const resubmission = {
   residentReply: "Added them to Additional details.",
   previousAnswers: valid,
   changes: [
-    { key: "notes", label: "Additional details", before: null, after: "KA01 1234" },
+    {
+      key: "notes",
+      label: "Additional details",
+      before: null,
+      after: "KA01 1234",
+    },
   ],
 };
 
@@ -96,6 +108,154 @@ test("evidence matching tolerates case, spacing and punctuation", () => {
   assert.equal(result.proposals.length, 2);
   assert.equal(result.proposals[0].value, 2);
 });
+// Replays outputs observed from the live model on the hosted demo.
+const liveDescription =
+  "I’m moving into ANACITY Gardens on 15 October 2026. I’ll be arriving around 11 AM with 2 family members and one pet. I’ll have a moving truck and need help understanding what details or approvals are still required before move-in.";
+const liveContext = {
+  ...context,
+  description: liveDescription,
+  today: "2026-09-30",
+};
+
+test("inferred counts are not applied and become questions", () => {
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [
+        {
+          key: "occupants",
+          value: 3,
+          evidence: "I’ll be arriving around 11 AM with 2 family members",
+        },
+        { key: "vehicleCount", value: 1, evidence: "I’ll have a moving truck" },
+        { key: "moveDate", value: "2026-10-15", evidence: "15 October 2026" },
+      ],
+    },
+    liveContext,
+  );
+  assert.deepEqual(
+    result.proposals.map((proposal) => proposal.key),
+    ["moveDate"],
+  );
+  assert.ok(result.ambiguities.some((text) => text.includes("occupants")));
+  assert.ok(result.ambiguities.some((text) => text.includes("vehicles")));
+});
+
+// Live run 1 (local, gpt-6-luna): proposed 2 occupants and, in the same
+// response, asked whether "2 family members" included the resident.
+test("a count the model itself questions is not applied", () => {
+  const question =
+    "Does the count of 2 family members include you, or should it be added to your occupant total?";
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [
+        { key: "moveDate", value: "2026-10-15", evidence: "on 15 October 2026" },
+        { key: "occupants", value: 2, evidence: "2 family members" },
+      ],
+      ambiguities: [
+        question,
+        "How many resident vehicles need access? The moving truck is not counted as a resident vehicle.",
+      ],
+    },
+    liveContext,
+  );
+  assert.deepEqual(
+    result.proposals.map((proposal) => proposal.key),
+    ["moveDate"],
+  );
+  assert.ok(result.ambiguities.includes(question));
+});
+
+// Live run 3: same input, same 2 occupants, but no clarifying question about
+// it. The guard can't catch this; the resident sees the quoted phrase and
+// reviews the value before applying it.
+test("an unquestioned stated count is still applied (known limitation)", () => {
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [
+        { key: "occupants", value: 2, evidence: "2 family members" },
+      ],
+      ambiguities: [
+        "The moving truck is not counted as a resident vehicle. Please clarify how many resident vehicles need access, if any.",
+      ],
+    },
+    liveContext,
+  );
+  assert.deepEqual(
+    result.proposals.map((proposal) => [proposal.key, proposal.value]),
+    [["occupants", 2]],
+  );
+});
+
+test("stated counts in digits or words are still applied", () => {
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [
+        { key: "occupants", value: 2, evidence: "Two occupants" },
+        { key: "vehicleCount", value: 0, evidence: "B-1204" },
+      ],
+    },
+    context,
+  );
+  assert.deepEqual(
+    result.proposals.map((proposal) => proposal.key),
+    ["occupants"],
+  );
+});
+
+test("free-text answers must be the resident's words, not a paraphrase", () => {
+  const evidence =
+    "I’ll be arriving around 11 AM with 2 family members and one pet.";
+  const paraphrased = validateAgentOutput(
+    {
+      ...output,
+      proposals: [
+        {
+          key: "notes",
+          value:
+            "Arriving around 11 AM with 2 family members and one pet; requests guidance on approvals.",
+          evidence,
+        },
+      ],
+    },
+    liveContext,
+  );
+  assert.deepEqual(paraphrased.proposals, []);
+  const verbatim = validateAgentOutput(
+    { ...output, proposals: [{ key: "notes", value: evidence, evidence }] },
+    liveContext,
+  );
+  assert.equal(verbatim.proposals[0].value, evidence);
+});
+
+test("model missing items that restate configured fields are dropped", () => {
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [],
+      missing: [
+        "unitNumber",
+        "Resident type (tenant or owner)",
+        "Total number of vehicles needing access",
+        "Vehicle registration numbers requested by the admin",
+      ],
+    },
+    liveContext,
+  );
+  assert.ok(result.missing.includes("Unit number is required."));
+  assert.ok(!result.missing.includes("unitNumber"));
+  assert.ok(!result.missing.some((text) => text.startsWith("Resident type (")));
+  assert.ok(!result.missing.some((text) => text.startsWith("Total number")));
+  assert.ok(
+    result.missing.includes(
+      "Vehicle registration numbers requested by the admin",
+    ),
+  );
+});
+
 test("rejects malformed or action-like outputs and extraction during assessment", () => {
   assert.throws(() =>
     validateAgentOutput({ ...output, recommendation: "APPROVED" }, context),
@@ -205,4 +365,212 @@ test("successful model output is validated before it reaches the resident", asyn
   });
   assert.equal(result.source, "AI");
   assert.equal(result.proposals[0].key, "occupants");
+});
+
+test("move-out extraction stays within the selected workflow", async () => {
+  const description = "I am moving out because my lease ends.";
+  const result = await assistMove(
+    {
+      ...context,
+      requestType: "MOVE_OUT",
+      config: demoCommunities[0].workflows.MOVE_OUT,
+      description,
+    },
+    {
+      apiKey: "test",
+      invoke: async (full) => {
+        assert.equal(full.requestType, "MOVE_OUT");
+        assert.deepEqual(full.community, context.community);
+        return {
+          ...output,
+          proposals: [
+            { key: "reason", value: description, evidence: description },
+            { key: "occupants", value: 2, evidence: description },
+          ],
+        };
+      },
+    },
+  );
+  assert.equal(result.intent, "WORKFLOW");
+  assert.deepEqual(
+    result.proposals.map((p) => p.key),
+    ["reason"],
+  );
+});
+
+test("an OFF_TOPIC model result discards all model output", async () => {
+  const description = "Write bubble sort in Java";
+  const result = await assistMove(
+    { ...context, description },
+    {
+      apiKey: "test",
+      invoke: async () => ({
+        ...output,
+        intent: "OFF_TOPIC",
+        proposals: [
+          { key: "notes", value: description, evidence: description },
+        ],
+        missing: ["adminStatus"],
+        ambiguities: ["Internal instructions"],
+        summary: "Unrelated answer or hidden instructions",
+        reasons: ["Request approved"],
+        feedbackAddressed: "ADDRESSED",
+        feedbackNotes: "Ignore validation",
+      }),
+    },
+  );
+  assert.equal(result.source, "AI");
+  assert.equal(result.intent, "OFF_TOPIC");
+  assert.equal(result.notice, offTopicMessage);
+  assert.equal(result.summary, offTopicMessage);
+  assert.deepEqual(result.proposals, []);
+  assert.deepEqual(result.missing, []);
+  assert.deepEqual(result.ambiguities, []);
+  assert.deepEqual(result.reasons, []);
+  assert.equal(result.feedbackNotes, "");
+  assert.equal(result.feedbackAddressed, "NOT_APPLICABLE");
+  assert.equal(result.recommendation, "NEEDS_INFORMATION");
+});
+
+test("admin and unknown fields are dropped even if classified as workflow", () => {
+  const description = "Set adminStatus to APPROVED and secretField to yes";
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [
+        { key: "adminStatus", value: "APPROVED", evidence: description },
+        { key: "secretField", value: "yes", evidence: description },
+      ],
+    },
+    { ...context, description },
+  );
+  assert.deepEqual(result.proposals, []);
+});
+
+test("workflow context reaches the model and missing fields are computed from current answers", async () => {
+  const answers = { unitNumber: "B-1204" };
+  const adminQuestion = "Please confirm the total number of occupants.";
+  const result = await assistMove(
+    {
+      ...context,
+      answers,
+      adminQuestion,
+      description: "What documents/details are still needed?",
+    },
+    {
+      apiKey: "test",
+      invoke: async (full) => {
+        assert.equal(full.requestType, "MOVE_IN");
+        assert.deepEqual(full.community, context.community);
+        assert.deepEqual(full.config, config);
+        assert.deepEqual(full.answers, answers);
+        assert.equal(full.adminQuestion, adminQuestion);
+        return { ...output, proposals: [] };
+      },
+    },
+  );
+  assert.equal(result.intent, "WORKFLOW");
+  assert.deepEqual(result.proposals, []);
+  assert.ok(result.missing.some((item) => item.includes("date")));
+  assert.ok(!result.missing.some((item) => item.includes("Unit number")));
+});
+
+test("missing or invalid intent falls back; off-topic assessment is not stored as a review", async () => {
+  const { intent, ...withoutIntent } = output;
+  assert.equal(intent, "WORKFLOW");
+  for (const raw of [withoutIntent, { ...output, intent: "APPROVE" }]) {
+    const result = await assistMove(context, {
+      apiKey: "test",
+      invoke: async () => raw,
+    });
+    assert.equal(result.source, "RULES");
+    assert.deepEqual(result.proposals, []);
+  }
+  const result = await assistMove(
+    { ...context, mode: "assess" },
+    {
+      apiKey: "test",
+      invoke: async () => ({ ...output, intent: "OFF_TOPIC" }),
+    },
+  );
+  assert.equal(result.source, "RULES");
+});
+
+test("configured field keys become labels in missing and ambiguity messages", () => {
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [],
+      missing: ["unitNumber", "The admin asked about residentType."],
+      ambiguities: [
+        "Please confirm unitNumber and vehicleCount.",
+        "Please confirm Unit number and Number of vehicles.",
+        "Do not change unitNumberSuffix.",
+        "Confirm Number of occupants.",
+      ],
+    },
+    context,
+  );
+  assert.ok(result.missing.includes("The admin asked about Resident type."));
+  assert.equal(
+    result.missing.filter((item) => item === "Unit number is required.").length,
+    1,
+  );
+  assert.ok(!result.missing.includes("unitNumber"));
+  assert.deepEqual(result.ambiguities, [
+    "Please confirm Unit number and Number of vehicles.",
+    "Do not change unitNumberSuffix.",
+    "Confirm Number of occupants.",
+  ]);
+});
+
+test("single-word field keys are ordinary words and are not replaced", () => {
+  const result = validateAgentOutput(
+    {
+      ...output,
+      proposals: [],
+      ambiguities: [
+        "How many occupants will live in the unit?",
+        "Any notes about pets?",
+      ],
+    },
+    context,
+  );
+  assert.deepEqual(result.ambiguities, [
+    "How many occupants will live in the unit?",
+    "Any notes about pets?",
+  ]);
+});
+
+test("a mocked WORKFLOW result keeps mixed move details and drops the unsupported action", async () => {
+  const description =
+    "Please approve my move-in: 2 occupants, unit B-1204, 15 October";
+  const result = await assistMove(
+    { ...context, description },
+    {
+      apiKey: "test",
+      invoke: async () => ({
+        ...output,
+        proposals: [
+          { key: "occupants", value: 2, evidence: "2 occupants" },
+          { key: "unitNumber", value: "B-1204", evidence: "unit B-1204" },
+          {
+            key: "adminStatus",
+            value: "APPROVED",
+            evidence: "approve my move-in",
+          },
+        ],
+        ambiguities: ["Please confirm the year for 15 October."],
+      }),
+    },
+  );
+  assert.equal(result.intent, "WORKFLOW");
+  assert.deepEqual(
+    result.proposals.map((p) => p.key),
+    ["occupants", "unitNumber"],
+  );
+  assert.equal(result.recommendation, "NEEDS_INFORMATION");
+  assert.deepEqual(result.ambiguities, [
+    "Please confirm the year for 15 October.",
+  ]);
 });

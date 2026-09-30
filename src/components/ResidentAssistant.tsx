@@ -83,8 +83,8 @@ export default function ResidentAssistant({
         disabled={busy || disabled}
       />
       <p className="text-xs text-gray-500">
-        Your description and current answers are sent to OpenAI. Nothing
-        changes in the form until you apply the suggestions.
+        Your description and current answers are sent to OpenAI. Nothing changes
+        in the form until you apply the suggestions.
       </p>
       <button
         type="button"
@@ -105,7 +105,7 @@ export default function ResidentAssistant({
           className="space-y-3 rounded-lg bg-gray-50 p-4 text-sm"
         >
           <p>{result.notice}</p>
-          {result.proposals.length > 0 && (
+          {result.intent !== "OFF_TOPIC" && result.proposals.length > 0 && (
             <>
               <p className="font-medium">
                 Suggested values (these replace what&apos;s in the form):
@@ -121,7 +121,10 @@ export default function ResidentAssistant({
                       }
                     </dt>
                     <dd className="whitespace-pre-wrap break-words">
-                      {String(proposal.value)}{" "}
+                      {config.fields.find((field) => field.key === proposal.key)
+                        ?.type === "select"
+                        ? String(proposal.value).replaceAll("_", " ")
+                        : String(proposal.value)}{" "}
                       <span className="text-gray-500">
                         (from: {proposal.evidence})
                       </span>
@@ -149,18 +152,19 @@ export default function ResidentAssistant({
               </button>
             </>
           )}
-          {[...result.missing, ...result.ambiguities].length > 0 && (
-            <>
-              <p className="font-medium">Please clarify or complete:</p>
-              <ul className="list-disc space-y-1 pl-5">
-                {[...result.missing, ...result.ambiguities].map(
-                  (message, index) => (
-                    <li key={index}>{message}</li>
-                  ),
-                )}
-              </ul>
-            </>
-          )}
+          {result.intent !== "OFF_TOPIC" &&
+            [...result.missing, ...result.ambiguities].length > 0 && (
+              <>
+                <p className="font-medium">Please clarify or complete:</p>
+                <ul className="list-disc space-y-1 pl-5">
+                  {[...result.missing, ...result.ambiguities].map(
+                    (message, index) => (
+                      <li key={index}>{message}</li>
+                    ),
+                  )}
+                </ul>
+              </>
+            )}
         </div>
       )}
     </section>

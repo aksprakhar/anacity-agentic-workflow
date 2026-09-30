@@ -64,6 +64,12 @@ There is no login. The **Resident** pages act as `resident@demo.com` and the **A
 13. On a submitted request, write a message and click **Reject**. Rejection asks for confirmation because it's final. The resident sees the reason on their request page.
 14. Validation: past dates, negative counts and missing required fields are blocked in the browser and on the server. Approval re-checks the request against today's date.
 
+## Assistant boundary
+
+The resident assistant only helps complete the selected community move-in/move-out workflow. It receives the request type, community name, configured fields and rules, current answers, date and any current admin question. It must not invent community requirements. When move details are mixed with a request to approve, reject, delete, change status or reveal instructions, the prompt asks for `WORKFLOW`: extract the supported details and ignore the unsupported action. Unrelated questions or unsupported actions without relevant move content use `OFF_TOPIC`. Server code clears all proposals and model commentary for that result and returns "I can only help fill in your move-in or move-out request." The UI shows no suggestions. The assistant proposes field values and lists missing details or clarifications; it has no free-text guidance channel.
+
+Configured-field, evidence, count and value checks still apply to `WORKFLOW` results; the assistant has no action tools, and server validation and manual admin decisions remain authoritative. Classification is model-based: these are prototype guardrails, not complete production abuse prevention. A missing key or failed call keeps the existing manual fallback. Tests mock the classification; they do not measure live-model accuracy.
+
 ## Checks
 
 ```sh
@@ -73,7 +79,7 @@ npm test
 npm run build
 ```
 
-`npm test` runs 30 unit tests and needs no database or API key. See [docs/solution.md](docs/solution.md#9-testing) for what they cover.
+`npm test` runs focused unit tests and needs no database or API key. See [docs/solution.md](docs/solution.md#9-testing) for what they cover.
 
 ## Where things live
 

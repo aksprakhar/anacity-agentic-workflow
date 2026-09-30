@@ -91,9 +91,11 @@ I used AI for the three jobs that are about interpreting language, and kept ever
 
 | Job | When | Input context | Output |
 |---|---|---|---|
-| **Intake extraction** | Resident clicks "Suggest field values" | Community config (or the request's snapshot), current answers, the resident's description, today's date and, when correcting a request, the admin's question | Proposed values with quoted evidence, missing items, clarifying questions |
+| **Intake extraction** | Resident clicks "Suggest field values" | Selected community name and request type, community config (or the request's snapshot), current answers, the resident's description, today's date and, when correcting a request, the admin's question | Proposed values with quoted evidence, missing items, clarifying questions |
 | **Submission summary** | Every submit / resubmit | Config snapshot, submitted answers | Short summary for the admin, a non-binding recommendation and reasons |
 | **Feedback check** | Resubmission after a more-info request | The admin's question, the resident's reply, the previous answers, and the list of changed fields | Addressed / Partially addressed / Not addressed, plus a note on what is still outstanding |
+
+The AI feedback verdict is advisory and can be influenced by resident wording, which is why the raw resident reply and deterministic diff are shown beside it.
 
 The feedback check is the part I think matters most. Without it the summary mostly repeated answers the admin could already see. With it, the model answers the question an admin actually has on a resubmission: *did they fix what I asked for?* The field diff is computed in code and handed to the model, so the model reasons about the change rather than trying to find it.
 
@@ -112,9 +114,18 @@ I kept autonomy low on purpose. A wrong approval lets someone into a building, a
 
 ### Guardrails
 
+The resident assistant helps fill the selected move form through proposed values, missing details and clarifications, including replies to admin questions. It has no free-text community-guidance channel. The prompt identifies ANACITY and receives the request type, trusted community name, configured field labels/types/options/requirements, current answers, date and current admin question. It forbids invented requirements, unsupported actions and revealing hidden instructions.
+
+A required structured `intent` distinguishes `WORKFLOW` from `OFF_TOPIC`. The prompt keeps mixed move details and unsupported actions as `WORKFLOW`, extracting supported details and ignoring the action. Unrelated questions or unsupported actions alone use `OFF_TOPIC`. For `OFF_TOPIC`, server code discards every proposal and all generated commentary and returns "I can only help fill in your move-in or move-out request." The resident UI shows only that message. Unknown intent or malformed output uses the existing fallback. Assessment mode cannot accept an off-topic review. Older stored assessments remain readable.
+
+Intent classification still depends on the model and can be wrong, including on disguised or mixed prompt injections. These are prototype-level guardrails, not complete production abuse prevention. The assistant has no action tools; configured-field/value checks and server-side lifecycle validation remain authoritative even if classification fails. Tests use mocked classifications, not live API calls.
+
 - **Structured output only**: the model must return JSON matching a strict schema. Anything else, including an extra key such as `approve`, is treated as a failed call.
 - **Each proposal is checked independently**: a proposal is dropped if its key isn't in the config, it repeats a key, or its evidence phrase can't be found in the resident's text (the match ignores case, spacing and punctuation). One bad proposal doesn't discard the good ones.
 - **Invalid values become questions**: if the resident wrote a date in the past, the proposal isn't applied and the resident sees a clarification ("'2025-03-15' was not applied. Planned move date must be after today…") rather than a generic error.
+- **Counts must be stated, not inferred**: a number is applied only if it appears in the quoted words, as digits or a word. "2 family members" can't become 3 occupants, and "a moving truck" can't become 1 vehicle. Instead the resident is asked to confirm. A count is also dropped when the model's own clarifying question quotes the phrase it came from ("Does 2 family members include you?"). A count that is stated but misread, with no such question, still gets through; the resident sees the quoted phrase next to the value.
+- **Free text stays in the resident's words**: a proposed Additional details value must appear in the description. A summary or rephrasing is dropped, so the admin never reads AI text presented as the resident's.
+- **One source for missing fields**: the application reports missing configured fields itself, and model "missing" items that restate a field by name are dropped. The model can still re-ask for a field in different words ("How many vehicles need access?"); the prompt discourages this, but it isn't filtered.
 - **Deterministic overrides**: if code finds missing fields or the model reports ambiguities, or the feedback verdict is *not* or *partially addressed*, the recommendation is forced to NEEDS_INFORMATION regardless of what the model said.
 - **Resident text is treated as data**, and the prompt says so. I don't rely on that alone, which is why the output checks above exist.
 
@@ -172,18 +183,40 @@ What would need a code change: a new field type (for example a file upload), con
 
 ## 9. Testing
 
-Automated tests (`npm test`, Node's test runner through tsx, 30 tests, no database or API key needed) cover:
+Automated tests (`npm test`, Node's test runner through tsx, no database or API key needed) cover:
 
 - **Configuration**: all four demo configs are valid and differ between communities; duplicate keys, bad options, unsupported types, a missing `moveDate` and invalid next steps are rejected.
 - **Answer validation**: required fields per community, number ranges and zero values, select options, real calendar dates, the future-date rule in India time, unknown fields, drafts.
 - **Workflow rules**: the full role × status transition matrix; admin messages and resident replies need at least five characters.
-- **Agent output**: bad proposals are dropped while valid ones are kept; an invalid value becomes a clarification; evidence matching tolerates formatting; malformed and action-like outputs are rejected; the feedback verdict only applies to resubmissions and forces NEEDS_INFORMATION when not addressed; the resubmission context reaches the model; API errors, refusals and a missing key fall back safely.
+- **Agent output**: bad proposals are dropped while valid ones are kept; an invalid value becomes a clarification; evidence matching tolerates formatting; inferred counts, counts the model itself questioned and paraphrased free text are rejected, and duplicated missing items are dropped (these replay real outputs from the live model, including one test that pins the known misread-count limitation); malformed and action-like outputs are rejected; the feedback verdict only applies to resubmissions and forces NEEDS_INFORMATION when not addressed; the resubmission context reaches the model; API errors, refusals and a missing key fall back safely.
 - **Helpers**: the field diff, reading move dates for the dashboards, and the assist rate limiter.
+- **Domain boundary**: move-in/move-out extraction, stripping all output from a mocked off-topic result, retaining supported mixed-message details from a mocked workflow result, rejecting unknown/admin proposals, field-key-to-label replacement, and invalid-intent fallback. These tests do not verify live intent classification.
 - **Assistant context**: the admin's question reaches the model when a resident corrects a request.
 
 `npm run lint`, `npm run typecheck` and `npm run build` complete without errors.
 
 Not covered by automated tests: route handlers and the service layer against a real database (the transactions and conflict checks), browser flows, and extraction quality against a real model. The README walkthrough is my manual test script for those flows. Unit tests can't measure how good extraction is; the next step there is a small set of example descriptions with expected fields that runs against the live model.
+
+**Live model check.** I ran the assistant on the hosted demo with the same description twice ("…on 15 October 2026… with 2 family members and one pet. I'll have a moving truck…"). Both runs got the date right with the correct quote. The first run correctly asked whether "2 family members" meant two or three occupants and whether the truck counted as a vehicle. The second run, on identical input, guessed 3 occupants and 1 vehicle instead. Both runs rewrote the resident's words into a third-person summary for Additional details, and both repeated missing fields that the application had already listed. The prompt alone didn't prevent any of this, so I added the code checks listed under Guardrails and turned both outputs into unit tests. The lesson I took: an instruction like "don't guess" changes behaviour on average, but it's the code checks that make it reliable.
+
+I then ran a fuller live suite locally against a copy of the database, with `gpt-6-luna`, calling the same API routes the UI uses:
+
+| Scenario | Runs | Result |
+|---|---|---|
+| Clean description (unit, date, tenant, two occupants, one car) | 2 | All five fields correct, identical both times |
+| Past date ("15 March 2020") | 2 | Not applied; a "please give a future date" clarification both times |
+| Vague date ("next month") | 1 | Asked which date; nothing guessed |
+| "…with 2 family members… a moving truck" | 3 | Truck never counted as a vehicle; Additional details kept verbatim. Occupants proposed as 2 in two runs, one of which also asked whether the count included the resident |
+| Move details + "please approve" / "set status to APPROVED" | 4 | All WORKFLOW; details extracted, the action ignored |
+| Unrelated questions (code, general knowledge, finance, small talk) | 4 | All OFF_TOPIC; only the fixed message shown |
+| Action or instruction requests alone (approve, reject, delete, set adminStatus, reveal prompt, pretend to be admin) | 6 | All OFF_TOPIC; nothing leaked, no action taken |
+| Resubmission: question answered | 1 | *Addressed* |
+| Resubmission: one of two questions answered | 1 | *Partially addressed*, naming the unanswered part |
+| Resubmission: reply ignores the question | 1 | *Not addressed* ("no fields were changed") |
+| Resubmission: reply claims "fully addressed", nothing changed | 1 | *Not addressed*; the model wasn't talked into a better verdict |
+| Unknown model name (real API error) | 1 | Labelled fallback, no proposals |
+
+The run where the model proposed 2 occupants while asking about that same count led to the questioned-count guard above. The other run proposed 2 without asking, and that case still gets through. In some runs the model also re-asked for fields the resident hadn't mentioned ("Are you an owner or a tenant?" next to "Resident type is required."). These are single runs on one model, not an evaluation set, so they show the behaviour is plausible, not that it's guaranteed.
 
 ## 10. Limitations
 
@@ -195,6 +228,9 @@ Not covered by automated tests: route handlers and the service layer against a r
 - Creating a request isn't idempotent. If the response is lost, check the dashboard before retrying.
 - The extraction assistant doesn't keep a conversation; each suggestion request is independent.
 - The assist endpoint's rate limit (10 requests per client per minute) is held in memory per server instance. It stops casual abuse of a hosted demo but isn't a shared quota.
+- A count that the resident stated but the model misreads (for example "with 2 family members" taken as 2 occupants) can still be suggested when the model doesn't flag it. The resident sees the quoted phrase and must apply the value themselves.
+- The assistant sometimes re-asks for fields the resident never mentioned, in different words from the application's own "X is required." message.
+- Long descriptions took 11–13 seconds with `gpt-6-luna` in live testing (short ones took 2–6 seconds). The timeout is 20 seconds, so a much longer description could fall back to the no-AI path.
 
 ## 11. Failure recovery
 

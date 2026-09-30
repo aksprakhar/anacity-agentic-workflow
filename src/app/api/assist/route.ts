@@ -49,6 +49,11 @@ export async function POST(request: Request) {
     const config = existing
       ? await configForRequest(existing)
       : await communityConfig(body.communityId, body.type);
+    const community = await prisma.community.findUnique({
+      where: { id: existing?.communityId ?? body.communityId },
+      select: { name: true },
+    });
+    if (!community) throw new RequestError("Community not found.", 404);
     const { answers, errors } = validateAnswers(config, body.answers, false);
     if (Object.keys(errors).length)
       throw new RequestError(
@@ -63,6 +68,8 @@ export async function POST(request: Request) {
     return Response.json(
       await assistMove({
         mode: "extract",
+        requestType: existing?.type ?? body.type,
+        community,
         config,
         answers,
         description: body.description,

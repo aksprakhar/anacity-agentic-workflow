@@ -92,8 +92,9 @@ export default async function RequestDetail({
   const assessment = record(request.aiAssessment);
   const { source, ...output } = assessment;
   // Non-strict copy of the schema ignores stored extras such as the notice.
-  // Assessments stored before the feedback check existed lack its fields.
+  // Older assessments lack intent and feedback fields.
   const parsedAssessment = z.object(agentOutputSchema.shape).safeParse({
+    intent: "WORKFLOW",
     feedbackAddressed: "NOT_APPLICABLE",
     feedbackNotes: "",
     ...output,
